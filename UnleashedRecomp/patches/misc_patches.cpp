@@ -197,15 +197,17 @@ PPC_FUNC(sub_824EE620)
 // This is a constructor for some struct that constructed inside CTownManContext::CTownManContext()
 // and within the calls contained in CTownManBase::ProcMsgSetTownManRetryTimeTable().
 // 
-// Within the constructor of the CTownManContext, second member of this struct is initialized to -1
-// after this call happens inside CTownManContext::CTownManContext at the pretty much the very of that function call.
+// Within the constructor of the CTownManContext, the second member of this struct is initialized to -1
+// after this call happens inside CTownManContext::CTownManContext() at pretty much the very of that function call.
 //
 // This initialization of the member variable is however not executed when this constructor for the struct
 // is called from someplace else in the game's code, as such it remains with unitialized data for that field.
 //
-// Ensuring that this member variable is initialized to what CTownManContext::CTownManContext sets it to
-// anytime this constructor is called fixes an issue with Tails not disappearing when giving you the camera
-// after Rooftop Run Act 1.
+// Ensuring that this member variable is initialized to 0 (which is what the logic within the function at 82B3CD40
+// seems to try to do but fails (when compared to the PS3 code it seems that there might be something going wrong with the
+// exit logic of the loop)) anytime this constructor is called fixes an issue with Tails not disappearing when giving you
+// the camera after Rooftop Run Act 1 (Night). This setting of it to 0 won't break the behaviour created by the call to it
+// from CTownManContext::CTownManContext() as that itself sets it to -1 later on. It only affects other instance of the call.
 //
 // NOTE: ctx.r3.u32 + 0 is also unitialized by this constructor, however both instances of this function being called
 // initialized the said variable later on before being used.
@@ -215,6 +217,6 @@ PPC_FUNC(sub_824EE620)
 PPC_FUNC_IMPL(__imp__sub_8297C630);
 PPC_FUNC(sub_8297C630)
 {
-    PPC_STORE_U32(ctx.r3.u32 + 4, -1);
+    PPC_STORE_U32(ctx.r3.u32 + 4, 0);
     __imp__sub_8297C630(ctx, base);
 }
