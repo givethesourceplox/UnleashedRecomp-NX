@@ -203,11 +203,10 @@ PPC_FUNC(sub_824EE620)
 // This initialization of the member variable is however not executed when this constructor for the struct
 // is called from someplace else in the game's code, as such it remains with unitialized data for that field.
 //
-// Ensuring that this member variable is initialized to 0 (which is what the logic within the function at 82B3CD40
-// seems to try to do but fails (when compared to the PS3 code it seems that there might be something going wrong with the
-// exit logic of the loop)) anytime this constructor is called fixes an issue with Tails not disappearing when giving you
-// the camera after Rooftop Run Act 1 (Night). This setting of it to 0 won't break the behaviour created by the call to it
-// from CTownManContext::CTownManContext() as that itself sets it to -1 later on. It only affects other instance of the call.
+// Ensuring that this member variable is initialized to 0 anytime this constructor is called fixes an issue with
+// Tails not disappearing when giving you the camera after Rooftop Run Act 1 (Night). This setting of it to 0 won't
+// break the behaviour created by the call to it from CTownManContext::CTownManContext() as that itself sets it to -1 later on.
+// It only affects other instance of the call.
 //
 // NOTE: ctx.r3.u32 + 0 is also unitialized by this constructor, however both instances of this function being called
 // initialized the said variable later on before being used.
