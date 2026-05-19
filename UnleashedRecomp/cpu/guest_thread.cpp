@@ -43,6 +43,9 @@ GuestThreadContext::~GuestThreadContext()
 #ifdef USE_PTHREAD
 static size_t GetStackSize()
 {
+#if defined(__SWITCH__)
+    return 8 * 1024 * 1024;
+#else
     // Cache as this should not change.
     static size_t stackSize = 0;
     if (stackSize == 0)
@@ -62,6 +65,7 @@ static size_t GetStackSize()
         }
     }
     return stackSize;
+#endif
 }
 
 static void* GuestThreadFunc(void* arg)
@@ -84,12 +88,28 @@ GuestThreadHandle::GuestThreadHandle(const GuestThreadParams& params)
 {
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, GetStackSize());
+    const auto stackResult = pthread_attr_setstacksize(&attr, GetStackSize());
+    if (stackResult != 0)
+    {
+#if defined(__SWITCH__)
+        LOGFN_ERROR("pthread_attr_setstacksize failed with error code 0x{:X}.", stackResult);
+#else
+        fprintf(stderr, "pthread_attr_setstacksize failed with error code 0x%X.\n", stackResult);
+#endif
+    }
+
     const auto ret = pthread_create(&thread, &attr, GuestThreadFunc, this);
+    pthread_attr_destroy(&attr);
     if (ret != 0) {
+#if defined(__SWITCH__)
+        LOGFN_ERROR("pthread_create failed with error code 0x{:X}.", ret);
+#else
         fprintf(stderr, "pthread_create failed with error code 0x%X.\n", ret);
+#endif
         return;
     }
+
+    threadCreated = true;
 }
 #else
       , thread(GuestThreadFunc, this)
@@ -100,7 +120,8 @@ GuestThreadHandle::GuestThreadHandle(const GuestThreadParams& params)
 GuestThreadHandle::~GuestThreadHandle()
 {
 #ifdef USE_PTHREAD
-    pthread_join(thread, nullptr);
+    if (threadCreated && !joined.exchange(true))
+        pthread_join(thread, nullptr);
 #else
     if (thread.joinable())
         thread.join();
@@ -130,7 +151,8 @@ uint32_t GuestThreadHandle::Wait(uint32_t timeout)
     assert(timeout == INFINITE);
 
 #ifdef USE_PTHREAD
-    pthread_join(thread, nullptr);
+    if (threadCreated && !joined.exchange(true))
+        pthread_join(thread, nullptr);
 #else
     if (thread.joinable())
         thread.join();

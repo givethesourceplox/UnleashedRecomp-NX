@@ -284,7 +284,7 @@ struct GuestVertexDeclaration : GuestResource
 // VertexShader/PixelShader
 struct GuestShader : GuestResource
 {
-    Mutex mutex;
+    RecompMutex mutex;
     std::unique_ptr<RenderShader> shader;
     struct ShaderCacheEntry* shaderCacheEntry = nullptr;
     ankerl::unordered_dense::map<uint32_t, std::unique_ptr<RenderShader>> linkedShaders;

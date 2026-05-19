@@ -2,13 +2,13 @@
 
 #ifdef _WIN32
 
-struct Mutex : CRITICAL_SECTION
+struct RecompMutex : CRITICAL_SECTION
 {
-    Mutex()
+    RecompMutex()
     {
         InitializeCriticalSection(this);
     }
-    ~Mutex()
+    ~RecompMutex()
     {
         DeleteCriticalSection(this);
     }
@@ -26,6 +26,10 @@ struct Mutex : CRITICAL_SECTION
 
 #else
 
-using Mutex = std::mutex;
+using RecompMutex = std::mutex;
 
+#endif
+
+#if !defined(__SWITCH__)
+using Mutex = RecompMutex;
 #endif

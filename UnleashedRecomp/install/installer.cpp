@@ -47,6 +47,71 @@ static std::string toLower(std::string str) {
     return str;
 };
 
+static bool directoryContainsContentMarker(const std::filesystem::path &directory)
+{
+    std::error_code ec;
+    if (!std::filesystem::is_directory(directory, ec))
+    {
+        return false;
+    }
+
+    return std::filesystem::exists(directory / GameExecutableFile, ec) ||
+        std::filesystem::exists(directory / UpdateExecutablePatchFile, ec) ||
+        std::filesystem::exists(directory / DLCValidationFile, ec);
+}
+
+static void findNestedContentDirectory(const std::filesystem::path &directory, std::filesystem::path &candidate, size_t &candidateCount)
+{
+    std::error_code ec;
+    for (const auto &entry : std::filesystem::directory_iterator(directory, ec))
+    {
+        if (ec)
+        {
+            return;
+        }
+
+        if (!entry.is_directory(ec))
+        {
+            continue;
+        }
+
+        const std::filesystem::path entryPath = entry.path();
+        if (directoryContainsContentMarker(entryPath))
+        {
+            candidate = entryPath;
+            ++candidateCount;
+        }
+    }
+}
+
+static std::filesystem::path resolveDirectoryContentRoot(const std::filesystem::path &directory)
+{
+    if (directoryContainsContentMarker(directory))
+    {
+        return directory;
+    }
+
+    std::filesystem::path candidate;
+    size_t candidateCount = 0;
+    findNestedContentDirectory(directory, candidate, candidateCount);
+
+    std::error_code ec;
+    for (const auto &entry : std::filesystem::directory_iterator(directory, ec))
+    {
+        if (ec)
+        {
+            break;
+        }
+
+        if (entry.is_directory(ec))
+        {
+            findNestedContentDirectory(entry.path(), candidate, candidateCount);
+        }
+    }
+
+    return candidateCount == 1 ? candidate : directory;
+}
+
 static std::unique_ptr<VirtualFileSystem> createFileSystemFromPath(const std::filesystem::path &path)
 {
     if (XContentFileSystem::check(path))
@@ -59,8 +124,7 @@ static std::unique_ptr<VirtualFileSystem> createFileSystemFromPath(const std::fi
     }
     else if (std::filesystem::is_directory(path))
     {
-        return DirectoryFileSystem::create(path);
-    }
+        return DirectoryFileSystem::create(resolveDirectoryContentRoot(path));    }
     else
     {
         return nullptr;

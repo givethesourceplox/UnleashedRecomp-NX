@@ -1036,7 +1036,7 @@ uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object, uint32_t WaitReason, 
 
 static std::vector<size_t> g_tlsFreeIndices;
 static size_t g_tlsNextIndex = 0;
-static Mutex g_tlsAllocationMutex;
+static RecompMutex g_tlsAllocationMutex;
 
 static uint32_t& KeTlsGetValueRef(size_t index)
 {
@@ -1065,7 +1065,7 @@ uint32_t KeTlsSetValue(uint32_t dwTlsIndex, uint32_t lpTlsValue)
 
 uint32_t KeTlsAlloc()
 {
-    std::lock_guard<Mutex> lock(g_tlsAllocationMutex);
+    std::lock_guard<RecompMutex> lock(g_tlsAllocationMutex);
     if (!g_tlsFreeIndices.empty())
     {
         size_t index = g_tlsFreeIndices.back();
@@ -1078,7 +1078,7 @@ uint32_t KeTlsAlloc()
 
 uint32_t KeTlsFree(uint32_t dwTlsIndex)
 {
-    std::lock_guard<Mutex> lock(g_tlsAllocationMutex);
+    std::lock_guard<RecompMutex> lock(g_tlsAllocationMutex);
     g_tlsFreeIndices.push_back(dwTlsIndex);
     return TRUE;
 }

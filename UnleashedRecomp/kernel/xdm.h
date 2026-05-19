@@ -124,7 +124,7 @@ inline T* GetInvalidKernelObject()
     return reinterpret_cast<T*>(g_memory.Translate(GUEST_INVALID_HANDLE_VALUE));
 }
 
-extern Mutex g_kernelLock;
+extern RecompMutex g_kernelLock;
 
 template<typename T>
 inline T* QueryKernelObject(XDISPATCHER_HEADER& header)

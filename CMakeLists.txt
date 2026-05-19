@@ -1,6 +1,8 @@
 cmake_minimum_required (VERSION 3.20)
 
-if(NOT DEFINED ENV{VCPKG_ROOT})
+option(UNLEASHED_RECOMP_HOST_TOOLS_ONLY "Only build host-side generation tools." OFF)
+
+if(NOT UNLEASHED_RECOMP_SWITCH AND NOT UNLEASHED_RECOMP_HOST_TOOLS_ONLY AND NOT DEFINED ENV{VCPKG_ROOT})
     message(FATAL_ERROR "VCPKG_ROOT is not defined!")
 endif()
 
@@ -18,6 +20,19 @@ endif()
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 project("UnleashedRecomp-ALL")
+
+cmake_policy(SET CMP0069 NEW)
+set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
+if (CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT UNLEASHED_RECOMP_SWITCH)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT _IPO_OK OUTPUT _IPO_ERROR)
+    if (_IPO_OK)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+        message(STATUS "LTO enabled for Release build")
+    else()
+        message(STATUS "LTO not available: ${_IPO_ERROR}")
+    endif()
+endif()
 
 if (APPLE)
     enable_language(OBJC OBJCXX)
@@ -38,6 +53,11 @@ if (UNLEASHED_RECOMP_ARCHITECTURE STREQUAL "x86_64" OR UNLEASHED_RECOMP_ARCHITEC
     add_compile_options(
         -march=sandybridge
     )
+endif()
+
+if (UNLEASHED_RECOMP_HOST_TOOLS_ONLY)
+    add_subdirectory(${UNLEASHED_RECOMP_TOOLS_ROOT})
+    return()
 endif()
 
 add_subdirectory(${UNLEASHED_RECOMP_THIRDPARTY_ROOT})

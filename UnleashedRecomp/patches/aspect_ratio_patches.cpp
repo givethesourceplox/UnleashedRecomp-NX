@@ -76,7 +76,7 @@ namespace Chao::CSD
     };
 }
 
-static Mutex g_pathMutex;
+static RecompMutex g_pathMutex;
 static std::map<const void*, XXH64_hash_t> g_paths;
 
 static XXH64_hash_t HashStr(const std::string_view& value)

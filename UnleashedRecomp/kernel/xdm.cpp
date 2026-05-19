@@ -2,7 +2,7 @@
 #include "xdm.h"
 #include "freelist.h"
 
-Mutex g_kernelLock;
+RecompMutex g_kernelLock;
 
 void DestroyKernelObject(KernelObject* obj)
 {

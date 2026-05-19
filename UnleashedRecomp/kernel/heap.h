@@ -4,11 +4,18 @@
 
 struct Heap
 {
-    Mutex mutex;
-    O1HeapInstance* heap;
+    RecompMutex mutex;
+    O1HeapInstance* heap{};
 
-    Mutex physicalMutex;
-    O1HeapInstance* physicalHeap;
+    RecompMutex physicalMutex;
+    O1HeapInstance* physicalHeap{};
+
+#if defined(__SWITCH__)
+    size_t committedHeapPrefix{};
+    size_t committedPhysicalHeapPrefix{};
+    size_t touchedHeapPrefix{};
+    size_t touchedPhysicalHeapPrefix{};
+#endif
 
     void Init();
 
@@ -22,6 +29,9 @@ struct Heap
     T* Alloc(Args&&... args)
     {
         T* obj = (T*)Alloc(sizeof(T));
+        if (obj == nullptr)
+            return nullptr;
+
         new (obj) T(std::forward<Args>(args)...);
         return obj;
     }
@@ -30,6 +40,9 @@ struct Heap
     T* AllocPhysical(Args&&... args)
     {
         T* obj = (T*)AllocPhysical(sizeof(T), alignof(T));
+        if (obj == nullptr)
+            return nullptr;
+
         new (obj) T(std::forward<Args>(args)...);
         return obj;
     }
