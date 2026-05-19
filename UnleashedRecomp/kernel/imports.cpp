@@ -12,15 +12,37 @@
 #include "xdm.h"
 #include <user/config.h>
 #include <os/logger.h>
+#include <condition_variable>
 
 #ifdef _WIN32
 #include <ntstatus.h>
 #endif
 
+static std::atomic<uint32_t> g_dispatcherGeneration;
+static std::mutex g_dispatcherMutex;
+static std::condition_variable g_dispatcherCv;
+
+static void NotifyDispatcherWaiters()
+{
+    g_dispatcherGeneration.fetch_add(1, std::memory_order_release);
+    g_dispatcherCv.notify_all();
+}
+
+static void WaitDispatcherGeneration(uint32_t generation)
+{
+    std::unique_lock lock(g_dispatcherMutex);
+    g_dispatcherCv.wait(lock, [&]
+    {
+        return g_dispatcherGeneration.load(std::memory_order_acquire) != generation;
+    });
+}
+
 struct Event final : KernelObject, HostObject<XKEVENT>
 {
     bool manualReset;
-    std::atomic<bool> signaled;
+    mutable std::mutex mutex;
+    std::condition_variable cv;
+    bool signaled;
 
     Event(XKEVENT* header)
         : manualReset(!header->Type), signaled(!!header->SignalState)
@@ -34,37 +56,22 @@ struct Event final : KernelObject, HostObject<XKEVENT>
 
     uint32_t Wait(uint32_t timeout) override
     {
+        std::unique_lock lock(mutex);
+
         if (timeout == 0)
         {
-            if (manualReset)
-            {
-                if (!signaled)
-                    return STATUS_TIMEOUT;
-            }
-            else
-            {
-                bool expected = true;
-                if (!signaled.compare_exchange_strong(expected, false))
-                    return STATUS_TIMEOUT;
-            }
+            if (!signaled)
+                return STATUS_TIMEOUT;
+
+            if (!manualReset)
+                signaled = false;
         }
         else if (timeout == INFINITE)
         {
-            if (manualReset)
-            {
-                signaled.wait(false);
-            }
-            else
-            {
-                while (true)
-                {
-                    bool expected = true;
-                    if (signaled.compare_exchange_weak(expected, false))
-                        break;
+            cv.wait(lock, [&] { return signaled; });
 
-                    signaled.wait(expected);
-                }
-            }
+            if (!manualReset)
+                signaled = false;
         }
         else
         {
@@ -74,30 +81,45 @@ struct Event final : KernelObject, HostObject<XKEVENT>
         return STATUS_SUCCESS;
     }
 
+    bool IsSignaled() const override
+    {
+        std::lock_guard lock(mutex);
+        return signaled;
+    }
+
     bool Set()
     {
-        signaled = true;
+        bool previousState;
+        {
+            std::lock_guard lock(mutex);
+            previousState = signaled;
+            signaled = true;
+        }
 
         if (manualReset)
-            signaled.notify_all();
+            cv.notify_all();
         else
-            signaled.notify_one();
+            cv.notify_one();
 
-        return TRUE;
+        NotifyDispatcherWaiters();
+
+        return previousState;
     }
 
     bool Reset()
     {
+        std::lock_guard lock(mutex);
+        const bool previousState = signaled;
         signaled = false;
-        return TRUE;
+        return previousState;
     }
 };
 
-static std::atomic<uint32_t> g_keSetEventGeneration;
-
 struct Semaphore final : KernelObject, HostObject<XKSEMAPHORE>
 {
-    std::atomic<uint32_t> count;
+    mutable std::mutex mutex;
+    std::condition_variable cv;
+    uint32_t count;
     uint32_t maximumCount;
 
     Semaphore(XKSEMAPHORE* semaphore)
@@ -112,33 +134,22 @@ struct Semaphore final : KernelObject, HostObject<XKSEMAPHORE>
 
     uint32_t Wait(uint32_t timeout) override
     {
+        std::unique_lock lock(mutex);
+
         if (timeout == 0)
         {
-            uint32_t currentCount = count.load();
-            if (currentCount != 0)
+            if (count != 0)
             {
-                if (count.compare_exchange_weak(currentCount, currentCount - 1))
-                    return STATUS_SUCCESS;
+                --count;
+                return STATUS_SUCCESS;
             }
 
             return STATUS_TIMEOUT;
         }
         else if (timeout == INFINITE)
         {
-            uint32_t currentCount;
-            while (true)
-            {
-                currentCount = count.load();
-                if (currentCount != 0)
-                {
-                    if (count.compare_exchange_weak(currentCount, currentCount - 1))
-                        return STATUS_SUCCESS;
-                }
-                else
-                {
-                    count.wait(0);
-                }
-            }
+            cv.wait(lock, [&] { return count != 0; });
+            --count;
 
             return STATUS_SUCCESS;
         }
@@ -149,15 +160,26 @@ struct Semaphore final : KernelObject, HostObject<XKSEMAPHORE>
         }
     }
 
+    bool IsSignaled() const override
+    {
+        std::lock_guard lock(mutex);
+        return count != 0;
+    }
+
     void Release(uint32_t releaseCount, uint32_t* previousCount)
     {
-        if (previousCount != nullptr)
-            *previousCount = count;
+        {
+            std::lock_guard lock(mutex);
+            assert(releaseCount <= maximumCount - count);
 
-        assert(count + releaseCount <= maximumCount);
+            if (previousCount != nullptr)
+                *previousCount = count;
 
-        count += releaseCount;
-        count.notify_all();
+            count += releaseCount;
+        }
+
+        cv.notify_all();
+        NotifyDispatcherWaiters();
     }
 };
 
@@ -174,6 +196,20 @@ inline void CloseKernelObject(XDISPATCHER_HEADER& header)
 uint32_t GuestTimeoutToMilliseconds(be<int64_t>* timeout)
 {
     return timeout ? (*timeout * -1) / 10000 : INFINITE;
+}
+
+static bool TryWriteGuestU32(uint32_t guestAddress, uint32_t value)
+{
+    if (guestAddress < 0x1000 || (guestAddress & 3) != 0 || guestAddress > PPC_MEMORY_SIZE - sizeof(be<uint32_t>))
+        return false;
+
+#if defined(__SWITCH__)
+    if (!g_memory.CommitRange(guestAddress, sizeof(be<uint32_t>)))
+        return false;
+#endif
+
+    *reinterpret_cast<be<uint32_t>*>(g_memory.Translate(guestAddress)) = value;
+    return true;
 }
 
 void VdHSIOCalibrationLock()
@@ -662,8 +698,8 @@ uint32_t NtSuspendThread(GuestThreadHandle* hThread, uint32_t* suspendCount)
 {
     assert(hThread != GetKernelObject(CURRENT_THREAD_HANDLE) && hThread->GetThreadId() == GuestThread::GetCurrentThreadId());
 
-    hThread->suspended = true;
-    hThread->suspended.wait(true);
+    hThread->Suspend();
+    hThread->WaitUntilResumed();
 
     return S_OK;
 }
@@ -685,7 +721,9 @@ void RtlLeaveCriticalSection(XRTL_CRITICAL_SECTION* cs)
 
     std::atomic_ref owningThread(cs->OwningThread);
     owningThread.store(0);
+#if !defined(__SWITCH__)
     owningThread.notify_one();
+#endif
 }
 
 void RtlEnterCriticalSection(XRTL_CRITICAL_SECTION* cs)
@@ -705,7 +743,11 @@ void RtlEnterCriticalSection(XRTL_CRITICAL_SECTION* cs)
             return;
         }
 
+#if defined(__SWITCH__)
+        std::this_thread::yield();
+#else
         owningThread.wait(previousOwner);
+#endif
     }
 }
 
@@ -997,12 +1039,7 @@ void KeUnlockL2()
 
 bool KeSetEvent(XKEVENT* pEvent, uint32_t Increment, bool Wait)
 {
-    bool result = QueryKernelObject<Event>(*pEvent)->Set();
-
-    ++g_keSetEventGeneration;
-    g_keSetEventGeneration.notify_all();
-
-    return result;
+    return QueryKernelObject<Event>(*pEvent)->Set();
 }
 
 bool KeResetEvent(XKEVENT* pEvent)
@@ -1013,30 +1050,26 @@ bool KeResetEvent(XKEVENT* pEvent)
 uint32_t KeWaitForSingleObject(XDISPATCHER_HEADER* Object, uint32_t WaitReason, uint32_t WaitMode, bool Alertable, be<int64_t>* Timeout)
 {
     const uint32_t timeout = GuestTimeoutToMilliseconds(Timeout);
-    assert(timeout == INFINITE);
+    assert(timeout == 0 || timeout == INFINITE);
 
     switch (Object->Type)
     {
         case 0:
         case 1:
-            QueryKernelObject<Event>(*Object)->Wait(timeout);
-            break;
+            return QueryKernelObject<Event>(*Object)->Wait(timeout);
 
         case 5:
-            QueryKernelObject<Semaphore>(*Object)->Wait(timeout);
-            break;
+            return QueryKernelObject<Semaphore>(*Object)->Wait(timeout);
 
         default:
             assert(false && "Unrecognized kernel object type.");
             return STATUS_TIMEOUT;
     }
-
-    return STATUS_SUCCESS;
 }
 
 static std::vector<size_t> g_tlsFreeIndices;
 static size_t g_tlsNextIndex = 0;
-static Mutex g_tlsAllocationMutex;
+static RecompMutex g_tlsAllocationMutex;
 
 static uint32_t& KeTlsGetValueRef(size_t index)
 {
@@ -1065,7 +1098,7 @@ uint32_t KeTlsSetValue(uint32_t dwTlsIndex, uint32_t lpTlsValue)
 
 uint32_t KeTlsAlloc()
 {
-    std::lock_guard<Mutex> lock(g_tlsAllocationMutex);
+    std::lock_guard<RecompMutex> lock(g_tlsAllocationMutex);
     if (!g_tlsFreeIndices.empty())
     {
         size_t index = g_tlsFreeIndices.back();
@@ -1078,7 +1111,7 @@ uint32_t KeTlsAlloc()
 
 uint32_t KeTlsFree(uint32_t dwTlsIndex)
 {
-    std::lock_guard<Mutex> lock(g_tlsAllocationMutex);
+    std::lock_guard<RecompMutex> lock(g_tlsAllocationMutex);
     g_tlsFreeIndices.push_back(dwTlsIndex);
     return TRUE;
 }
@@ -1307,7 +1340,7 @@ void MmQueryAllocationSize()
     LOG_UTILITY("!!! STUB !!!");
 }
 
-uint32_t NtClearEvent(Event* handle, uint32_t* previousState)
+uint32_t NtClearEvent(Event* handle)
 {
     handle->Reset();
     return 0;
@@ -1317,15 +1350,15 @@ uint32_t NtResumeThread(GuestThreadHandle* hThread, uint32_t* suspendCount)
 {
     assert(hThread != GetKernelObject(CURRENT_THREAD_HANDLE));
 
-    hThread->suspended = false;
-    hThread->suspended.notify_all();
+    hThread->Resume();
 
     return S_OK;
 }
 
-uint32_t NtSetEvent(Event* handle, uint32_t* previousState)
+uint32_t NtSetEvent(Event* handle, uint32_t previousState)
 {
-    handle->Set();
+    const bool previous = handle->Set();
+    TryWriteGuestU32(previousState, previous ? 1u : 0u);
     return 0;
 }
 
@@ -1335,13 +1368,11 @@ uint32_t NtCreateSemaphore(be<uint32_t>* Handle, XOBJECT_ATTRIBUTES* ObjectAttri
     return STATUS_SUCCESS;
 }
 
-uint32_t NtReleaseSemaphore(Semaphore* Handle, uint32_t ReleaseCount, int32_t* PreviousCount)
+uint32_t NtReleaseSemaphore(Semaphore* Handle, uint32_t ReleaseCount, uint32_t PreviousCount)
 {
     uint32_t previousCount;
     Handle->Release(ReleaseCount, &previousCount);
-
-    if (PreviousCount != nullptr)
-        *PreviousCount = ByteSwap(previousCount);
+    TryWriteGuestU32(PreviousCount, previousCount);
 
     return STATUS_SUCCESS;
 }
@@ -1501,37 +1532,98 @@ void NetDll_XNetGetTitleXnAddr()
 
 uint32_t KeWaitForMultipleObjects(uint32_t Count, xpointer<XDISPATCHER_HEADER>* Objects, uint32_t WaitType, uint32_t WaitReason, uint32_t WaitMode, uint32_t Alertable, be<int64_t>* Timeout)
 {
-    // FIXME: This function is only accounting for events.
-
     const uint64_t timeout = GuestTimeoutToMilliseconds(Timeout);
-    assert(timeout == INFINITE);
+    assert(timeout == 0 || timeout == INFINITE);
+
+    auto queryObject = [](XDISPATCHER_HEADER& header) -> KernelObject*
+    {
+        switch (header.Type)
+        {
+            case 0:
+            case 1:
+                return QueryKernelObject<Event>(header);
+
+            case 5:
+                return QueryKernelObject<Semaphore>(header);
+
+            default:
+                assert(false && "Unrecognized kernel object type.");
+                return nullptr;
+        }
+    };
 
     if (WaitType == 0) // Wait all
     {
-        for (size_t i = 0; i < Count; i++)
-            QueryKernelObject<Event>(*Objects[i])->Wait(timeout);
-    }
-    else
-    {
-        thread_local std::vector<Event*> s_events;
-        s_events.resize(Count);
+        thread_local std::vector<KernelObject*> s_objects;
+        s_objects.resize(Count);
 
         for (size_t i = 0; i < Count; i++)
-            s_events[i] = QueryKernelObject<Event>(*Objects[i]);
+        {
+            auto* object = Objects[i].get();
+            if (object == nullptr)
+                return STATUS_TIMEOUT;
+
+            s_objects[i] = queryObject(*object);
+        }
 
         while (true)
         {
-            uint32_t generation = g_keSetEventGeneration.load();
+            const uint32_t generation = g_dispatcherGeneration.load(std::memory_order_acquire);
+            bool allSignaled = true;
 
             for (size_t i = 0; i < Count; i++)
             {
-                if (s_events[i]->Wait(0) == STATUS_SUCCESS)
+                if (!s_objects[i]->IsSignaled())
+                {
+                    allSignaled = false;
+                    break;
+                }
+            }
+
+            if (allSignaled)
+            {
+                for (size_t i = 0; i < Count; i++)
+                    s_objects[i]->Wait(0);
+
+                return STATUS_SUCCESS;
+            }
+
+            if (timeout == 0)
+                return STATUS_TIMEOUT;
+
+            WaitDispatcherGeneration(generation);
+        }
+    }
+    else
+    {
+        thread_local std::vector<KernelObject*> s_objects;
+        s_objects.resize(Count);
+
+        for (size_t i = 0; i < Count; i++)
+        {
+            auto* object = Objects[i].get();
+            if (object == nullptr)
+                return STATUS_TIMEOUT;
+
+            s_objects[i] = queryObject(*object);
+        }
+
+        while (true)
+        {
+            uint32_t generation = g_dispatcherGeneration.load(std::memory_order_acquire);
+
+            for (size_t i = 0; i < Count; i++)
+            {
+                if (s_objects[i]->Wait(0) == STATUS_SUCCESS)
                 {
                     return STATUS_WAIT_0 + i;
                 }
             }
 
-            g_keSetEventGeneration.wait(generation);
+            if (timeout == 0)
+                return STATUS_TIMEOUT;
+
+            WaitDispatcherGeneration(generation);
         }
     }
 
@@ -1567,8 +1659,7 @@ uint32_t KeResumeThread(GuestThreadHandle* object)
 {
     assert(object != GetKernelObject(CURRENT_THREAD_HANDLE));
 
-    object->suspended = false;
-    object->suspended.notify_all();
+    object->Resume();
     return 0;
 }
 

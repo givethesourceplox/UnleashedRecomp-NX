@@ -1,0 +1,241 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6a7645a..e4d2d6f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -13,8 +13,16 @@ string(COMPARE EQUAL ${CMAKE_SYSTEM_NAME} "Linux" IS_LINUX)
+ include(CMakeDependentOption)
+ cmake_dependent_option(SDL_VULKAN_ENABLED "Enable SDL Vulkan integration" OFF IS_LINUX OFF)
+ cmake_dependent_option(D3D12_AGILITY_SDK_ENABLED "Enable D3D12 Agility SDK" OFF WIN32 OFF)
++option(PLUME_PLATFORM_SWITCH "Enable Nintendo Switch/libnx Vulkan integration" OFF)
+ option(PLUME_BUILD_EXAMPLES "Build example applications" OFF)
+ 
++if(PLUME_PLATFORM_SWITCH)
++    set(PLUME_SWITCH_DEVKITPRO "/opt/devkitpro" CACHE PATH "devkitPro root for Switch builds")
++    set(PLUME_SWITCH_NVK_ROOT "/opt/nvk-switch" CACHE PATH "Mesa/NVK Switch build or install root")
++    set(PLUME_SWITCH_NVK_LIBRARY "${PLUME_SWITCH_NVK_ROOT}/lib/libvulkan.a"
++        CACHE FILEPATH "Mesa/NVK Switch Vulkan static archive")
++endif()
++
+ # Windows-specific definitions
+ if(WIN32)
+     add_compile_definitions(NOMINMAX)
+@@ -41,6 +49,7 @@ endif()
+ message(STATUS "Plume - Building with backends: Vulkan=1 Metal=${APPLE} D3D12=${WIN32}")
+ message(STATUS "Plume - SDL Vulkan integration: ${SDL_VULKAN_ENABLED}")
+ message(STATUS "Plume - D3D12 Agility SDK: ${D3D12_AGILITY_SDK_ENABLED}")
++message(STATUS "Plume - Switch/libnx integration: ${PLUME_PLATFORM_SWITCH}")
+ message(STATUS "Plume - Building examples: ${PLUME_BUILD_EXAMPLES}")
+ 
+ # Basic source files that are always included
+@@ -93,6 +102,31 @@ if(D3D12_AGILITY_SDK_ENABLED)
+     target_link_libraries(plume PRIVATE Microsoft::DirectX-Headers Microsoft::DirectX-Guids Microsoft::DirectX12-Agility)
+ endif()
+ 
++if(PLUME_PLATFORM_SWITCH)
++    if(NOT EXISTS "${PLUME_SWITCH_NVK_LIBRARY}")
++        message(FATAL_ERROR "PLUME_SWITCH_NVK_LIBRARY does not exist: ${PLUME_SWITCH_NVK_LIBRARY}")
++    endif()
++    target_compile_definitions(plume PUBLIC
++        __SWITCH__
++        NX
++        VK_USE_PLATFORM_VI_NN
++    )
++    target_include_directories(plume PUBLIC
++        "${PLUME_SWITCH_NVK_ROOT}/include"
++        "${PLUME_SWITCH_DEVKITPRO}/libnx/include"
++        "${PLUME_SWITCH_DEVKITPRO}/portlibs/switch/include"
++    )
++    target_link_libraries(plume PUBLIC
++        "-Wl,-u,vk_icdGetInstanceProcAddr"
++        "-Wl,-u,vk_icdNegotiateLoaderICDInterfaceVersion"
++        "${PLUME_SWITCH_NVK_LIBRARY}"
++        drm_nouveau
++        zstd
++        z
++        nx
++    )
++endif()
++
+ # Platform-specific includes
+ if(APPLE)
+     target_include_directories(plume PRIVATE
+diff --git a/contrib/volk b/contrib/volk
+--- a/contrib/volk
++++ b/contrib/volk
+@@ -1 +1 @@
+-Subproject commit be3dbd49bf77052665e96b6c7484af855e7e5f67
++Subproject commit be3dbd49bf77052665e96b6c7484af855e7e5f67-dirty
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index eeb193b..7bbd30d 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -15,7 +15,9 @@
+ #include <cfloat>
+ #include <cstdint>
+ 
+-#if defined(_WIN64)
++#if defined(__SWITCH__)
++#include <switch.h>
++#elif defined(_WIN64)
+ #include <Windows.h>
+ #elif defined(__ANDROID__)
+ #include "android/native_window.h"
+@@ -34,7 +36,10 @@
+ #endif
+ 
+ namespace plume {
+-#if defined(_WIN64)
++#if defined(__SWITCH__)
++    // Native libnx window used by VK_NN_vi_surface.
++    typedef NWindow* RenderWindow;
++#elif defined(_WIN64)
+     // Native HWND handle to the target window.
+     typedef HWND RenderWindow;
+ #elif defined(__ANDROID__)
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 9103ca8..91f7132 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -15,6 +15,13 @@
+ #include <climits>
+ #include <unordered_map>
+ 
++#if defined(__SWITCH__)
++extern "C" {
++    VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vk_icdGetInstanceProcAddr(VkInstance instance, const char *pName);
++    VKAPI_ATTR VkResult VKAPI_CALL vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t *pSupportedVersion);
++}
++#endif
++
+ #if DLSS_ENABLED
+ #   include "render/plume_dlss.h"
+ #endif
+@@ -50,6 +57,8 @@ namespace plume {
+ #   endif
+ #   if defined(_WIN64)
+         VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
++#   elif defined(__SWITCH__)
++        VK_NN_VI_SURFACE_EXTENSION_NAME,
+ #   elif defined(__ANDROID__)
+         VK_KHR_ANDROID_SURFACE_EXTENSION_NAME,
+ #   elif defined(__linux__)
+@@ -60,7 +69,7 @@ namespace plume {
+     };
+ 
+     static const std::unordered_set<std::string> OptionalInstanceExtensions = {
+-#   if defined(__APPLE__)
++#   if defined(__APPLE__) && !defined(__SWITCH__)
+         // Tells the system Vulkan loader to enumerate portability drivers, if supported.
+         VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
+ #   endif
+@@ -81,8 +90,10 @@ namespace plume {
+         VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+         VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME,
+         VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME,
++#   if !defined(__SWITCH__)
+         VK_KHR_PRESENT_ID_EXTENSION_NAME,
+         VK_KHR_PRESENT_WAIT_EXTENSION_NAME,
++#   endif
+         VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME,
+         // Vulkan spec requires this to be enabled if supported by the driver.
+         VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME,
+@@ -2079,6 +2090,18 @@ namespace plume {
+             fprintf(stderr, "vkCreateWin32SurfaceKHR failed with error code 0x%X.\n", res);
+             return;
+         }
++#   elif defined(__SWITCH__)
++        assert(renderWindow != nullptr);
++        VkViSurfaceCreateInfoNN surfaceCreateInfo = {};
++        surfaceCreateInfo.sType = VK_STRUCTURE_TYPE_VI_SURFACE_CREATE_INFO_NN;
++        surfaceCreateInfo.window = renderWindow;
++
++        VulkanInterface *renderInterface = commandQueue->device->renderInterface;
++        res = vkCreateViSurfaceNN(renderInterface->instance, &surfaceCreateInfo, nullptr, &surface);
++        if (res != VK_SUCCESS) {
++            fprintf(stderr, "vkCreateViSurfaceNN failed with error code 0x%X.\n", res);
++            return;
++        }
+ #   elif defined(SDL_VULKAN_ENABLED)
+         VulkanInterface *renderInterface = commandQueue->device->renderInterface;
+         SDL_bool sdlRes = SDL_Vulkan_CreateSurface(renderWindow, renderInterface->instance, &surface);
+@@ -2437,6 +2460,17 @@ namespace plume {
+ #   elif defined(__ANDROID__)
+         dstWidth = ANativeWindow_getWidth(renderWindow);
+         dstHeight = ANativeWindow_getHeight(renderWindow);
++#   elif defined(__SWITCH__)
++        uint32_t nativeWidth = 0;
++        uint32_t nativeHeight = 0;
++        if (renderWindow != nullptr && nwindowGetDimensions(renderWindow, &nativeWidth, &nativeHeight) == 0) {
++            dstWidth = nativeWidth;
++            dstHeight = nativeHeight;
++        }
++        else {
++            dstWidth = 1280;
++            dstHeight = 720;
++        }
+ #   elif defined(__linux__)
+         XWindowAttributes attributes;
+         XGetWindowAttributes(renderWindow.display, renderWindow.window, &attributes);
+@@ -4398,11 +4432,26 @@ namespace plume {
+ #else
+     VulkanInterface::VulkanInterface() {
+ #endif
++#if defined(__SWITCH__)
++        uint32_t icdVersion = 7;
++        vk_icdNegotiateLoaderICDInterfaceVersion(&icdVersion);
++
++        PFN_vkGetInstanceProcAddr getInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
++            vk_icdGetInstanceProcAddr(VK_NULL_HANDLE, "vkGetInstanceProcAddr"));
++
++        if (getInstanceProcAddr == nullptr) {
++            getInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(&vk_icdGetInstanceProcAddr);
++        }
++
++        volkInitializeCustom(getInstanceProcAddr);
++        VkResult res = VK_SUCCESS;
++#else
+         VkResult res = volkInitialize();
+         if (res != VK_SUCCESS) {
+             fprintf(stderr, "volkInitialize failed with error code 0x%X.\n", res);
+             return;
+         }
++#endif
+ 
+         appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+         appInfo.pApplicationName = "plume";
+@@ -4417,7 +4466,7 @@ namespace plume {
+         createInfo.ppEnabledLayerNames = nullptr;
+         createInfo.enabledLayerCount = 0;
+ 
+-#   ifdef __APPLE__
++#   if defined(__APPLE__) && !defined(__SWITCH__)
+         createInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+ #   endif
+ 
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index 73022bb..6bf87f7 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -14,7 +14,12 @@
+ #include <unordered_map>
+ #include <unordered_set>
+ 
+-#if defined(_WIN64)
++#if defined(__SWITCH__)
++#ifndef VK_USE_PLATFORM_VI_NN
++#define VK_USE_PLATFORM_VI_NN
++#endif
++#include <switch.h>
++#elif defined(_WIN64)
+ #define VK_USE_PLATFORM_WIN32_KHR
+ #elif defined(__ANDROID__)
+ #define VK_USE_PLATFORM_ANDROID_KHR
+@@ -226,7 +231,7 @@ namespace plume {
+         VulkanCommandQueue *commandQueue = nullptr;
+         VkSurfaceKHR surface = VK_NULL_HANDLE;
+         RenderWindow renderWindow = {};
+-#if defined(__APPLE__)
++#if defined(__APPLE__) && !defined(__SWITCH__)
+         std::unique_ptr<CocoaWindow> windowWrapper;
+ #endif
+         uint32_t textureCount = 0;

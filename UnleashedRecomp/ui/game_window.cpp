@@ -5,7 +5,15 @@
 #include <os/version.h>
 #include <app.h>
 #include <sdl_listener.h>
+
+#if defined(__SWITCH__)
+#include <switch.h>
+#endif
+
+#if !defined(__SWITCH__)
 #include <SDL_syswm.h>
+#endif
+
 
 #if _WIN32
 #include <dwmapi.h>
@@ -157,6 +165,34 @@ int Window_OnSDLEvent(void*, SDL_Event* event)
 
 void GameWindow::Init(const char* sdlVideoDriver)
 {
+#if defined(__SWITCH__)
+    (void)sdlVideoDriver;
+
+    s_x = 0;
+    s_y = 0;
+    s_width = DEFAULT_WIDTH;
+    s_height = DEFAULT_HEIGHT;
+    s_isFocused = true;
+    s_isFullscreenCursorVisible = false;
+
+    s_renderWindow = nwindowGetDefault();
+    if (s_renderWindow != nullptr)
+    {
+        nwindowSetDimensions(s_renderWindow, s_width, s_height);
+        nwindowSetCrop(s_renderWindow, 0, 0, s_width, s_height);
+        nwindowSetSwapInterval(s_renderWindow, 1);
+
+        uint32_t nativeWidth = 0;
+        uint32_t nativeHeight = 0;
+        if (nwindowGetDimensions(s_renderWindow, &nativeWidth, &nativeHeight) == 0)
+        {
+            s_width = static_cast<int>(nativeWidth);
+            s_height = static_cast<int>(nativeHeight);
+        }
+    }
+
+    return;
+#else
 #ifdef __linux__
     SDL_SetHint("SDL_APP_ID", "io.github.hedge_dev.unleashedrecomp");
 #endif
@@ -227,10 +263,25 @@ void GameWindow::Init(const char* sdlVideoDriver)
     SetTitleBarColour();
 
     SDL_ShowWindow(s_pWindow);
+#endif
 }
 
 void GameWindow::Update()
 {
+#if defined(__SWITCH__)
+    uint32_t nativeWidth = 0;
+    uint32_t nativeHeight = 0;
+    if (s_renderWindow != nullptr && nwindowGetDimensions(s_renderWindow, &nativeWidth, &nativeHeight) == 0)
+    {
+        s_width = static_cast<int>(nativeWidth);
+        s_height = static_cast<int>(nativeHeight);
+    }
+
+    if (g_needsResize)
+        s_isChangingDisplay = false;
+
+    return;
+#endif
     if (!GameWindow::IsFullscreen() && !GameWindow::IsMaximised() && !s_isChangingDisplay)
     {
         Config::WindowX = GameWindow::s_x;
@@ -251,6 +302,11 @@ void GameWindow::Update()
 
 SDL_Surface* GameWindow::GetIconSurface(void* pIconBmp, size_t iconSize)
 {
+#if defined(__SWITCH__)
+    (void)pIconBmp;
+    (void)iconSize;
+    return nullptr;
+#else
     auto rw = SDL_RWFromMem(pIconBmp, iconSize);
     auto surface = SDL_LoadBMP_RW(rw, 1);
 
@@ -258,15 +314,21 @@ SDL_Surface* GameWindow::GetIconSurface(void* pIconBmp, size_t iconSize)
         LOGF_ERROR("Failed to load icon: {}", SDL_GetError());
 
     return surface;
+#endif
 }
 
 void GameWindow::SetIcon(void* pIconBmp, size_t iconSize)
 {
+#if defined(__SWITCH__)
+    (void)pIconBmp;
+    (void)iconSize;
+#else
     if (auto icon = GetIconSurface(pIconBmp, iconSize))
     {
         SDL_SetWindowIcon(s_pWindow, icon);
         SDL_FreeSurface(icon);
     }
+#endif
 }
 
 void GameWindow::SetIcon(bool isNight)
@@ -300,7 +362,11 @@ const char* GameWindow::GetTitle()
 
 void GameWindow::SetTitle(const char* title)
 {
+#if defined(__SWITCH__)
+    (void)title;
+#else
     SDL_SetWindowTitle(s_pWindow, title ? title : GetTitle());
+#endif
 }
 
 void GameWindow::SetTitleBarColour()
@@ -325,11 +391,18 @@ void GameWindow::SetTitleBarColour()
 
 bool GameWindow::IsFullscreen()
 {
+#if defined(__SWITCH__)
+    return true;
+#else
     return SDL_GetWindowFlags(s_pWindow) & SDL_WINDOW_FULLSCREEN_DESKTOP;
+#endif
 }
 
 bool GameWindow::SetFullscreen(bool isEnabled)
 {
+#if defined(__SWITCH__)
+    return true;
+#else
     if (isEnabled)
     {
         SDL_SetWindowFullscreen(s_pWindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
@@ -345,12 +418,14 @@ bool GameWindow::SetFullscreen(bool isEnabled)
     }
 
     return isEnabled;
+#endif
 }
     
 void GameWindow::SetFullscreenCursorVisibility(bool isVisible)
 {
     s_isFullscreenCursorVisible = isVisible;
 
+#if !defined(__SWITCH__)
     if (IsFullscreen())
     {
         SDL_ShowCursor(s_isFullscreenCursorVisible ? SDL_ENABLE : SDL_DISABLE);
@@ -359,15 +434,24 @@ void GameWindow::SetFullscreenCursorVisibility(bool isVisible)
     {
         SDL_ShowCursor(SDL_ENABLE);
     }
+#endif
 }
 
 bool GameWindow::IsMaximised()
 {
+#if defined(__SWITCH__)
+    return false;
+#else
     return SDL_GetWindowFlags(s_pWindow) & SDL_WINDOW_MAXIMIZED;
+#endif
 }
 
 EWindowState GameWindow::SetMaximised(bool isEnabled)
 {
+#if defined(__SWITCH__)
+    (void)isEnabled;
+    return EWindowState::Normal;
+#else
     if (isEnabled)
     {
         SDL_MaximizeWindow(s_pWindow);
@@ -380,21 +464,34 @@ EWindowState GameWindow::SetMaximised(bool isEnabled)
     return isEnabled
         ? EWindowState::Maximised
         : EWindowState::Normal;
+#endif
 }
 
 SDL_Rect GameWindow::GetDimensions()
 {
     SDL_Rect rect{};
 
+#if defined(__SWITCH__)
+    rect.x = 0;
+    rect.y = 0;
+    rect.w = s_width;
+    rect.h = s_height;
+#else
     SDL_GetWindowPosition(s_pWindow, &rect.x, &rect.y);
     SDL_GetWindowSize(s_pWindow, &rect.w, &rect.h);
+#endif
 
     return rect;
 }
 
 void GameWindow::GetSizeInPixels(int *w, int *h)
 {
+#if defined(__SWITCH__)
+    *w = s_width;
+    *h = s_height;
+#else
     SDL_GetWindowSizeInPixels(s_pWindow, w, h);
+#endif
 }
 
 void GameWindow::SetDimensions(int w, int h, int x, int y)
@@ -404,11 +501,22 @@ void GameWindow::SetDimensions(int w, int h, int x, int y)
     s_x = x;
     s_y = y;
 
+#if defined(__SWITCH__)
+    (void)x;
+    (void)y;
+
+    if (s_renderWindow != nullptr)
+    {
+        nwindowSetDimensions(s_renderWindow, w, h);
+        nwindowSetCrop(s_renderWindow, 0, 0, w, h);
+    }
+#else
     SDL_SetWindowSize(s_pWindow, w, h);
     SDL_ResizeEvent(s_pWindow, w, h);
 
     SDL_SetWindowPosition(s_pWindow, x, y);
     SDL_MoveEvent(s_pWindow, x, y);
+#endif
 }
 
 void GameWindow::ResetDimensions()
@@ -426,6 +534,9 @@ void GameWindow::ResetDimensions()
 
 uint32_t GameWindow::GetWindowFlags()
 {
+#if defined(__SWITCH__)
+    return 0;
+#else
     uint32_t flags = SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
 
     if (Config::WindowState == EWindowState::Maximised)
@@ -439,10 +550,14 @@ uint32_t GameWindow::GetWindowFlags()
 #endif
 
     return flags;
+#endif
 }
 
 int GameWindow::GetDisplayCount()
 {
+#if defined(__SWITCH__)
+    return 1;
+#else
     auto result = SDL_GetNumVideoDisplays();
 
     if (result < 0)
@@ -452,15 +567,24 @@ int GameWindow::GetDisplayCount()
     }
 
     return result;
+#endif
 }
 
 int GameWindow::GetDisplay()
 {
+#if defined(__SWITCH__)
+    return 0;
+#else
     return SDL_GetWindowDisplayIndex(s_pWindow);
+#endif
 }
 
 void GameWindow::SetDisplay(int displayIndex)
 {
+#if defined(__SWITCH__)
+    (void)displayIndex;
+    return;
+#else
     if (!IsFullscreen())
         return;
 
@@ -481,11 +605,23 @@ void GameWindow::SetDisplay(int displayIndex)
     {
         ResetDimensions();
     }
+#endif
 }
 
 std::vector<SDL_DisplayMode> GameWindow::GetDisplayModes(bool ignoreInvalidModes, bool ignoreRefreshRates)
 {
     auto result = std::vector<SDL_DisplayMode>();
+
+#if defined(__SWITCH__)
+    (void)ignoreInvalidModes;
+    (void)ignoreRefreshRates;
+    SDL_DisplayMode mode{};
+    mode.w = s_width;
+    mode.h = s_height;
+    mode.refresh_rate = 60;
+    result.push_back(mode);
+    return result;
+#else
     auto uniqueResolutions = std::set<std::pair<int, int>>();
     auto displayIndex = GetDisplay();
     auto modeCount = SDL_GetNumDisplayModes(displayIndex);
@@ -531,6 +667,7 @@ std::vector<SDL_DisplayMode> GameWindow::GetDisplayModes(bool ignoreInvalidModes
     }
 
     return result;
+#endif
 }
 
 int GameWindow::FindNearestDisplayMode()
@@ -559,6 +696,9 @@ int GameWindow::FindNearestDisplayMode()
 
 bool GameWindow::IsPositionValid()
 {
+#if defined(__SWITCH__)
+    return true;
+#else
     auto displayCount = GetDisplayCount();
 
     for (int i = 0; i < displayCount; i++)
@@ -589,4 +729,5 @@ bool GameWindow::IsPositionValid()
     }
 
     return false;
+#endif
 }

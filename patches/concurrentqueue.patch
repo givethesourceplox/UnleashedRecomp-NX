@@ -1,0 +1,92 @@
+diff --git a/lightweightsemaphore.h b/lightweightsemaphore.h
+index a041475..edcf2db 100644
+--- a/lightweightsemaphore.h
++++ b/lightweightsemaphore.h
+@@ -22,6 +22,10 @@ extern "C" {
+ 	__declspec(dllimport) unsigned long __stdcall WaitForSingleObject(void* hHandle, unsigned long dwMilliseconds);
+ 	__declspec(dllimport) int __stdcall ReleaseSemaphore(void* hSemaphore, long lReleaseCount, long* lpPreviousCount);
+ }
++#elif defined(__SWITCH__)
++#include <chrono>
++#include <condition_variable>
++#include <mutex>
+ #elif defined(__MACH__)
+ #include <mach/mach.h>
+ #elif defined(__MVS__)
+@@ -167,6 +171,76 @@ public:
+ 		}
+ 	}
+ };
++#elif defined(__SWITCH__)
++//---------------------------------------------------------
++// Semaphore (Nintendo Switch/libnx)
++//---------------------------------------------------------
++class Semaphore
++{
++private:
++	std::condition_variable m_condvar;
++	std::mutex m_mutex;
++	std::uint64_t m_count;
++
++	Semaphore(const Semaphore& other) MOODYCAMEL_DELETE_FUNCTION;
++	Semaphore& operator=(const Semaphore& other) MOODYCAMEL_DELETE_FUNCTION;
++
++public:
++	Semaphore(int initialCount = 0)
++		: m_count(static_cast<std::uint64_t>(initialCount))
++	{
++		assert(initialCount >= 0);
++	}
++
++	bool wait()
++	{
++		std::unique_lock<std::mutex> lock(m_mutex);
++		m_condvar.wait(lock, [this] { return m_count != 0; });
++		--m_count;
++		return true;
++	}
++	
++	bool try_wait()
++	{
++		std::lock_guard<std::mutex> lock(m_mutex);
++		bool success = false;
++		if (m_count != 0)
++		{
++			--m_count;
++			success = true;
++		}
++		return success;
++	}
++	
++	bool timed_wait(std::uint64_t usecs)
++	{
++		std::unique_lock<std::mutex> lock(m_mutex);
++		if (!m_condvar.wait_for(lock, std::chrono::microseconds(usecs), [this] { return m_count != 0; }))
++			return false;
++
++		--m_count;
++		return true;
++	}
++
++	void signal()
++	{
++		signal(1);
++	}
++
++	void signal(int count)
++	{
++		if (count <= 0)
++			return;
++
++		{
++			std::lock_guard<std::mutex> lock(m_mutex);
++			m_count += static_cast<std::uint64_t>(count);
++		}
++
++		for (int i = 0; i < count; ++i)
++			m_condvar.notify_one();
++	}
++};
+ #elif defined(__unix__) || defined(__MVS__)
+ //---------------------------------------------------------
+ // Semaphore (POSIX, Linux, zOS)

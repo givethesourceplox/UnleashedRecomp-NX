@@ -54,6 +54,6 @@ using Microsoft::WRL::ComPtr;
 #include "framework.h"
 #include "mutex.h"
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__SWITCH__)
 #include <sys/mman.h>
 #endif

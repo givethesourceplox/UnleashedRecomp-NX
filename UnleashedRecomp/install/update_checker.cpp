@@ -1,5 +1,29 @@
 #include "update_checker.h"
 
+#if defined(__SWITCH__)
+#include <os/logger.h>
+
+void UpdateChecker::initialize()
+{
+}
+
+bool UpdateChecker::start()
+{
+    return false;
+}
+
+UpdateChecker::Result UpdateChecker::check()
+{
+    return UpdateChecker::Result::NotStarted;
+}
+
+void UpdateChecker::visitWebsite()
+{
+    LOG("Update website launch is not supported on Switch.");
+}
+
+#else
+
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 
@@ -173,3 +197,5 @@ void UpdateChecker::visitWebsite()
     static_assert(false, "Visit website not implemented for this platform.");
 #endif
 }
+
+#endif

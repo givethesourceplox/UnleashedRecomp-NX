@@ -45,6 +45,52 @@ static std::vector<std::string> g_buttons;
 int g_defaultButtonIndex;
 int g_cancelButtonIndex;
 
+#if defined(__SWITCH__)
+static float NormalizeSwitchAxis(int16_t value)
+{
+    return std::clamp(value / 32767.0f, -1.0f, 1.0f);
+}
+
+static void ProcessSwitchInput()
+{
+    static uint16_t previousButtons = 0;
+    static float previousAxisY = 0.0f;
+
+    XAMINPUT_STATE inputState{};
+    if (App::s_isInit || !MessageWindow::s_isVisible || !hid::IsInputAllowed() || hid::GetState(0, &inputState) != 0)
+    {
+        previousButtons = 0;
+        previousAxisY = 0.0f;
+        return;
+    }
+
+    const uint16_t buttons = inputState.Gamepad.wButtons;
+    const uint16_t pressedButtons = buttons & ~previousButtons;
+
+    if ((pressedButtons & XAMINPUT_GAMEPAD_DPAD_UP) != 0)
+        g_joypadAxis = { 0.0f, -1.0f };
+    else if ((pressedButtons & XAMINPUT_GAMEPAD_DPAD_DOWN) != 0)
+        g_joypadAxis = { 0.0f, 1.0f };
+
+    if ((pressedButtons & XAMINPUT_GAMEPAD_A) != 0)
+        g_isAccepted = true;
+
+    if ((pressedButtons & XAMINPUT_GAMEPAD_B) != 0)
+        g_isDeclined = true;
+
+    constexpr float AxisTapRange = 0.5f;
+    float currentAxisY = -NormalizeSwitchAxis(inputState.Gamepad.sThumbLY);
+    bool sameDirection = (currentAxisY * previousAxisY) > 0.0f;
+    bool wasInRange = abs(previousAxisY) > AxisTapRange;
+    bool isInRange = abs(currentAxisY) > AxisTapRange;
+    if ((sameDirection || previousAxisY == 0.0f) && !wasInRange && isInRange)
+        g_joypadAxis.y = currentAxisY;
+
+    previousButtons = buttons;
+    previousAxisY = currentAxisY;
+}
+#endif
+
 class SDLEventListenerForMessageWindow : public SDLEventListener
 {
 public:
@@ -287,6 +333,10 @@ void MessageWindow::Draw()
 {
     if (!s_isVisible)
         return;
+
+#if defined(__SWITCH__)
+    ProcessSwitchInput();
+#endif
 
     auto drawList = ImGui::GetBackgroundDrawList();
     auto& res = ImGui::GetIO().DisplaySize;

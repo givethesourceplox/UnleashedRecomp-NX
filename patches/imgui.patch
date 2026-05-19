@@ -1,0 +1,20 @@
+diff --git a/backends/imgui_impl_sdl2.cpp b/backends/imgui_impl_sdl2.cpp
+index 15db0a843..ef34bc02c 100644
+--- a/backends/imgui_impl_sdl2.cpp
++++ b/backends/imgui_impl_sdl2.cpp
+@@ -420,9 +420,12 @@ static bool ImGui_ImplSDL2_Init(SDL_Window* window, SDL_Renderer* renderer, void
+ #if SDL_HAS_CAPTURE_AND_GLOBAL_MOUSE
+     const char* sdl_backend = SDL_GetCurrentVideoDriver();
+     const char* global_mouse_whitelist[] = { "windows", "cocoa", "x11", "DIVE", "VMAN" };
+-    for (int n = 0; n < IM_ARRAYSIZE(global_mouse_whitelist); n++)
+-        if (strncmp(sdl_backend, global_mouse_whitelist[n], strlen(global_mouse_whitelist[n])) == 0)
+-            mouse_can_use_global_state = true;
++    if (sdl_backend != nullptr)
++    {
++        for (int n = 0; n < IM_ARRAYSIZE(global_mouse_whitelist); n++)
++            if (strncmp(sdl_backend, global_mouse_whitelist[n], strlen(global_mouse_whitelist[n])) == 0)
++                mouse_can_use_global_state = true;
++    }
+ #endif
+ 
+     // Setup backend capabilities flags

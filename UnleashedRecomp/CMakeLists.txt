@@ -1,5 +1,9 @@
 project("UnleashedRecomp")
 
+if (UNLEASHED_RECOMP_SWITCH)
+    option(UNLEASHED_RECOMP_SWITCH_USE_PREGENERATED_APP_SHADERS "Use pre-generated SPIR-V headers for built-in app shaders." OFF)
+endif()
+
 if (WIN32)
     option(UNLEASHED_RECOMP_D3D12 "Add D3D12 support for rendering" ON)
 endif()
@@ -27,9 +31,15 @@ function(BIN2C)
         set(BIN2C_ARGS_COMPRESSION_TYPE "none")
     endif()
 
+    if (UNLEASHED_RECOMP_SWITCH)
+        set(BIN2C_COMMAND "${UNLEASHED_RECOMP_HOST_FILE_TO_C}")
+    else()
+        set(BIN2C_COMMAND "$<TARGET_FILE:file_to_c>")
+    endif()
+
     add_custom_command(OUTPUT "${BIN2C_ARGS_DEST_FILE}.c"
-        COMMAND $<TARGET_FILE:file_to_c> "${BIN2C_ARGS_SOURCE_FILE}" "${BIN2C_ARGS_ARRAY_NAME}" "${BIN2C_ARGS_COMPRESSION_TYPE}" "${BIN2C_ARGS_DEST_FILE}.c" "${BIN2C_ARGS_DEST_FILE}.h"
-        DEPENDS "${BIN2C_ARGS_SOURCE_FILE}"
+        COMMAND ${BIN2C_COMMAND} "${BIN2C_ARGS_SOURCE_FILE}" "${BIN2C_ARGS_ARRAY_NAME}" "${BIN2C_ARGS_COMPRESSION_TYPE}" "${BIN2C_ARGS_DEST_FILE}.c" "${BIN2C_ARGS_DEST_FILE}.h"
+        DEPENDS "${BIN2C_ARGS_SOURCE_FILE}" ${BIN2C_COMMAND}
         BYPRODUCTS "${BIN2C_ARGS_DEST_FILE}.h"
         COMMENT "Generating binary header for ${BIN2C_ARGS_SOURCE_FILE}..."
     )
@@ -54,8 +64,10 @@ add_compile_options(
 
 if (WIN32)
     add_compile_options(/fp:strict)
-else()
-    add_compile_options(-ffp-model=strict)
+elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-ffp-model=strict>)
+elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-frounding-math>)
 endif()
 
 add_compile_definitions(
@@ -81,7 +93,16 @@ set(UNLEASHED_RECOMP_LOCALE_CXX_SOURCES
     "locale/locale.cpp"
 )
 
-if (WIN32)
+if (UNLEASHED_RECOMP_SWITCH)
+    set(UNLEASHED_RECOMP_OS_CXX_SOURCES
+        "os/switch/logger_switch.cpp"
+        "os/switch/media_switch.cpp"
+        "os/switch/process_switch.cpp"
+        "os/switch/runtime_switch.cpp"
+        "os/switch/user_switch.cpp"
+        "os/switch/version_switch.cpp"
+    )
+elseif (WIN32)
     set(UNLEASHED_RECOMP_OS_CXX_SOURCES
         "os/win32/logger_win32.cpp"
         "os/win32/media_win32.cpp"
@@ -126,8 +147,16 @@ set(UNLEASHED_RECOMP_APU_CXX_SOURCES
 
 set(UNLEASHED_RECOMP_HID_CXX_SOURCES
     "hid/hid.cpp"
-    "hid/driver/sdl_hid.cpp"
 )
+if (UNLEASHED_RECOMP_SWITCH)
+    list(APPEND UNLEASHED_RECOMP_HID_CXX_SOURCES
+        "hid/driver/switch_hid.cpp"
+    )
+else()
+    list(APPEND UNLEASHED_RECOMP_HID_CXX_SOURCES
+        "hid/driver/sdl_hid.cpp"
+    )
+endif()
 
 set(UNLEASHED_RECOMP_PATCHES_CXX_SOURCES
     "patches/aspect_ratio_patches.cpp"
@@ -352,7 +381,32 @@ if (UNLEASHED_RECOMP_FLATPAK)
     )
 endif()
 
+if (UNLEASHED_RECOMP_SWITCH)
+    set(UNLEASHED_RECOMP_HOST_TOOLS_DIR "${CMAKE_SOURCE_DIR}/build/host-tools" CACHE PATH "Directory containing host-side generation tools.")
+    set(UNLEASHED_RECOMP_HOST_FILE_TO_C "${UNLEASHED_RECOMP_HOST_TOOLS_DIR}/tools/file_to_c/file_to_c" CACHE FILEPATH "Host file_to_c executable.")
+    set(UNLEASHED_RECOMP_HOST_X_DECOMPRESS "${UNLEASHED_RECOMP_HOST_TOOLS_DIR}/tools/x_decompress/x_decompress" CACHE FILEPATH "Host x_decompress executable.")
+    set(UNLEASHED_RECOMP_HOST_XENON_RECOMP "${UNLEASHED_RECOMP_HOST_TOOLS_DIR}/tools/XenonRecomp/XenonRecomp/XenonRecomp" CACHE FILEPATH "Host XenonRecomp executable.")
+    set(UNLEASHED_RECOMP_HOST_XENOS_RECOMP "${UNLEASHED_RECOMP_HOST_TOOLS_DIR}/tools/XenosRecomp/XenosRecomp/XenonRecomp" CACHE FILEPATH "Host XenosRecomp executable.")
+
+    target_compile_definitions(UnleashedRecomp PRIVATE
+        "UNLEASHED_RECOMP_SWITCH"
+        "__SWITCH__"
+        "NX"
+        "VK_USE_PLATFORM_VI_NN"
+        "IMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS"
+        "GAME_INSTALL_DIRECTORY=\"sdmc:/switch/UnleashedRecomp\""
+    )
+endif()
+
 find_package(CURL REQUIRED)
+
+if (UNLEASHED_RECOMP_SWITCH)
+    set(UNLEASHED_RECOMP_HOST_DXC_ROOT "${UNLEASHED_RECOMP_TOOLS_ROOT}/XenosRecomp/thirdparty/dxc-bin")
+    set(DIRECTX_DXC_TOOL
+        "${CMAKE_COMMAND}" "-E" "env" "LD_LIBRARY_PATH=${UNLEASHED_RECOMP_HOST_DXC_ROOT}/lib/x64"
+        "${UNLEASHED_RECOMP_HOST_DXC_ROOT}/bin/x64/dxc-linux"
+    )
+endif()
 
 if (UNLEASHED_RECOMP_D3D12)
     find_package(directx-headers CONFIG REQUIRED)
@@ -403,6 +457,10 @@ target_link_libraries(UnleashedRecomp PRIVATE
     plume
 )
 
+if (UNLEASHED_RECOMP_SWITCH)
+    target_link_libraries(UnleashedRecomp PRIVATE nx)
+endif()
+
 target_include_directories(UnleashedRecomp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     "${CMAKE_CURRENT_SOURCE_DIR}/api"
@@ -420,6 +478,7 @@ target_precompile_headers(UnleashedRecomp PUBLIC ${UNLEASHED_RECOMP_PRECOMPILED_
 function(compile_shader FILE_PATH TARGET_NAME)
     set(FILE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/gpu/shader/${FILE_PATH}.hlsl)
     cmake_path(GET FILE_PATH STEM VARIABLE_NAME)
+    set(SPIRV_HEADER ${FILE_PATH}.spirv.h)
     if (UNLEASHED_RECOMP_D3D12)
         add_custom_command(
             OUTPUT ${FILE_PATH}.dxil.h
@@ -428,12 +487,19 @@ function(compile_shader FILE_PATH TARGET_NAME)
         )
         target_sources(UnleashedRecomp PRIVATE ${FILE_PATH}.dxil.h)
     endif()
+    if (UNLEASHED_RECOMP_SWITCH AND UNLEASHED_RECOMP_SWITCH_USE_PREGENERATED_APP_SHADERS)
+        if (NOT EXISTS ${SPIRV_HEADER})
+            message(FATAL_ERROR "Missing pre-generated app shader header: ${SPIRV_HEADER}. Run tools/generate-switch-app-shaders.sh before configuring the Switch build.")
+        endif()
+        target_sources(UnleashedRecomp PRIVATE ${SPIRV_HEADER})
+        return()
+    endif()
     add_custom_command(
-        OUTPUT ${FILE_PATH}.spirv.h
-        COMMAND ${DIRECTX_DXC_TOOL} -T ${TARGET_NAME} -HV 2021 -all-resources-bound -spirv -fvk-use-dx-layout ${ARGN} -Fh ${FILE_PATH}.spirv.h ${FILE_PATH} -Vn g_${VARIABLE_NAME}_spirv
+        OUTPUT ${SPIRV_HEADER}
+        COMMAND ${DIRECTX_DXC_TOOL} -T ${TARGET_NAME} -HV 2021 -all-resources-bound -spirv -fvk-use-dx-layout ${ARGN} -Fh ${SPIRV_HEADER} ${FILE_PATH} -Vn g_${VARIABLE_NAME}_spirv
         DEPENDS ${FILE_PATH}
     )
-    target_sources(UnleashedRecomp PRIVATE ${FILE_PATH}.spirv.h)
+    target_sources(UnleashedRecomp PRIVATE ${SPIRV_HEADER})
 endfunction()
 
 function(compile_vertex_shader FILE_PATH)

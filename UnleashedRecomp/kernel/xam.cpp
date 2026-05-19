@@ -4,11 +4,25 @@
 #include <hid/hid.h>
 #include <ui/game_window.h>
 #include <cpu/guest_thread.h>
+#include <os/logger.h>
 #include <ranges>
 #include <unordered_set>
 #include "xxHashMap.h"
 #include <user/paths.h>
 #include <SDL.h>
+
+static void XamCompleteOverlapped(XXOVERLAPPED* overlapped, uint32_t error, uint32_t length)
+{
+    overlapped->dwCompletionContext = GuestThread::GetCurrentThreadId();
+
+#if defined(__SWITCH__) || (defined(__GNUC__) && !defined(__clang__))
+    overlapped->InternalLow = be<uint32_t>(error).value;
+    overlapped->InternalHigh = be<uint32_t>(length).value;
+#else
+    overlapped->Error = error;
+    overlapped->Length = length;
+#endif
+}
 
 struct XamListener : KernelObject
 {
@@ -87,6 +101,36 @@ std::array<xxHashMap<XHOSTCONTENT_DATA>, 3> gContentRegistry{};
 std::unordered_set<XamListener*> gListeners{};
 xxHashMap<std::string> gRootMap;
 
+#if defined(__SWITCH__)
+const char* XamContentTypeName(uint32_t type)
+{
+    switch (type)
+    {
+    case XCONTENTTYPE_RESERVED:
+        return "reserved";
+    case XCONTENTTYPE_SAVEDATA:
+        return "savedata";
+    case XCONTENTTYPE_DLC:
+        return "dlc";
+    default:
+        return "unknown";
+    }
+}
+
+const char* XamContentModeName(uint32_t mode)
+{
+    switch (mode)
+    {
+    case CREATE_ALWAYS:
+        return "CREATE_ALWAYS";
+    case OPEN_EXISTING:
+        return "OPEN_EXISTING";
+    default:
+        return "unknown";
+    }
+}
+#endif
+
 std::string_view XamGetRootPath(const std::string_view& root)
 {
     const auto result = gRootMap.find(StringHash(root));
@@ -100,6 +144,10 @@ std::string_view XamGetRootPath(const std::string_view& root)
 void XamRootCreate(const std::string_view& root, const std::string_view& path)
 {
     gRootMap.emplace(StringHash(root), path);
+
+#if defined(__SWITCH__)
+    LOGFN("Switch XAM root map: '{}' -> '{}'", root, path);
+#endif
 }
 
 XamListener::XamListener()
@@ -123,9 +171,18 @@ XCONTENT_DATA XamMakeContent(uint32_t type, const std::string_view& name)
 
 void XamRegisterContent(const XCONTENT_DATA& data, const std::string_view& root)
 {
-    const auto idx = data.dwContentType - 1;
+    const uint32_t contentType = data.dwContentType.get();
+    const auto idx = contentType - 1;
 
     gContentRegistry[idx].emplace(StringHash(data.szFileName), XHOSTCONTENT_DATA{ data }).first->second.szRoot = root;
+
+#if defined(__SWITCH__)
+    LOGFN("Switch XAM register content: type={}({}), name='{}', root='{}'",
+        contentType,
+        XamContentTypeName(contentType),
+        data.szFileName,
+        root);
+#endif
 }
 
 void XamRegisterContent(uint32_t type, const std::string_view name, const std::string_view& root)
@@ -246,9 +303,7 @@ uint32_t XamShowMessageBoxUI(uint32_t dwUserIndex, be<uint16_t>* wszTitle, be<ui
 
     if (pOverlapped)
     {
-        pOverlapped->dwCompletionContext = GuestThread::GetCurrentThreadId();
-        pOverlapped->Error = 0;
-        pOverlapped->Length = -1;
+        XamCompleteOverlapped(pOverlapped, 0, UINT32_MAX);
     }
 
     XamNotifyEnqueueEvent(9, 0);
@@ -259,6 +314,16 @@ uint32_t XamShowMessageBoxUI(uint32_t dwUserIndex, be<uint16_t>* wszTitle, be<ui
 uint32_t XamContentCreateEnumerator(uint32_t dwUserIndex, uint32_t DeviceID, uint32_t dwContentType,
     uint32_t dwContentFlags, uint32_t cItem, be<uint32_t>* pcbBuffer, be<uint32_t>* phEnum)
 {
+#if defined(__SWITCH__)
+    LOGFN("Switch XamContentCreateEnumerator enter: user={}, device={}, type={}({}), flags=0x{:08X}, count={}",
+        dwUserIndex,
+        DeviceID,
+        dwContentType,
+        XamContentTypeName(dwContentType),
+        dwContentFlags,
+        cItem);
+#endif
+
     if (dwUserIndex != 0)
     {
         GuestThread::SetLastError(ERROR_NO_SUCH_USER);
@@ -274,6 +339,13 @@ uint32_t XamContentCreateEnumerator(uint32_t dwUserIndex, uint32_t DeviceID, uin
 
     *phEnum = GetKernelHandle(enumerator);
 
+#if defined(__SWITCH__)
+    LOGFN("Switch XamContentCreateEnumerator leave: handle=0x{:08X}, bufferBytes={}, items={}",
+        phEnum ? phEnum->get() : 0u,
+        pcbBuffer ? pcbBuffer->get() : 0u,
+        cItem);
+#endif
+
     return 0;
 }
 
@@ -283,10 +355,26 @@ uint32_t XamEnumerate(uint32_t hEnum, uint32_t dwFlags, void* pvBuffer, uint32_t
     const auto count = enumerator->Next(pvBuffer);
 
     if (count == -1)
+    {
+#if defined(__SWITCH__)
+        LOGFN("Switch XamEnumerate: handle=0x{:08X}, flags=0x{:08X}, bufferBytes={}, result=NO_MORE_FILES",
+            hEnum,
+            dwFlags,
+            cbBuffer);
+#endif
         return ERROR_NO_MORE_FILES;
+    }
 
     if (pcItemsReturned)
         *pcItemsReturned = count;
+
+#if defined(__SWITCH__)
+    LOGFN("Switch XamEnumerate: handle=0x{:08X}, flags=0x{:08X}, bufferBytes={}, returned={}",
+        hEnum,
+        dwFlags,
+        cbBuffer,
+        count);
+#endif
 
     return ERROR_SUCCESS;
 }
@@ -295,9 +383,24 @@ uint32_t XamContentCreateEx(uint32_t dwUserIndex, const char* szRootName, const 
     uint32_t dwContentFlags, be<uint32_t>* pdwDisposition, be<uint32_t>* pdwLicenseMask,
     uint32_t dwFileCacheSize, uint64_t uliContentSize, PXXOVERLAPPED pOverlapped)
 {
-    const auto& registry = gContentRegistry[pContentData->dwContentType - 1];
-    const auto exists = registry.contains(StringHash(pContentData->szFileName));
+    const uint32_t contentType = pContentData ? pContentData->dwContentType.get() : 0u;
+    const char* contentName = pContentData ? pContentData->szFileName : "<null>";
+    const auto& registry = gContentRegistry[contentType - 1];
+    const auto exists = registry.contains(StringHash(contentName));
     const auto mode = dwContentFlags & 0xF;
+
+#if defined(__SWITCH__)
+    LOGFN("Switch XamContentCreateEx enter: root='{}', content='{}', type={}({}), flags=0x{:08X}, mode={}, exists={}, cacheSize={}, contentSize={}",
+        szRootName ? szRootName : "<null>",
+        contentName,
+        contentType,
+        XamContentTypeName(contentType),
+        dwContentFlags,
+        XamContentModeName(mode),
+        exists,
+        dwFileCacheSize,
+        uliContentSize);
+#endif
 
     if (mode == CREATE_ALWAYS)
     {
@@ -328,11 +431,25 @@ uint32_t XamContentCreateEx(uint32_t dwUserIndex, const char* szRootName, const 
             std::filesystem::create_directory(rootPath, ec);
 
             XamRootCreate(szRootName, root);
+
+#if defined(__SWITCH__)
+            LOGFN("Switch XamContentCreateEx create: root='{}', path='{}', ec='{}'",
+                szRootName ? szRootName : "<null>",
+                root,
+                ec.message());
+#endif
         }
         else
         {
             XamRootCreate(szRootName, registry.find(StringHash(pContentData->szFileName))->second.szRoot);
         }
+
+#if defined(__SWITCH__)
+        LOGFN("Switch XamContentCreateEx leave: root='{}', result=0x{:08X}, disposition={}",
+            szRootName ? szRootName : "<null>",
+            ERROR_SUCCESS,
+            pdwDisposition ? pdwDisposition->get() : 0xFFFFFFFF);
+#endif
 
         return ERROR_SUCCESS;
     }
@@ -346,6 +463,14 @@ uint32_t XamContentCreateEx(uint32_t dwUserIndex, const char* szRootName, const 
 
             XamRootCreate(szRootName, registry.find(StringHash(pContentData->szFileName))->second.szRoot);
 
+#if defined(__SWITCH__)
+            LOGFN("Switch XamContentCreateEx leave: root='{}', result=0x{:08X}, disposition={}, mapped='{}'",
+                szRootName ? szRootName : "<null>",
+                ERROR_SUCCESS,
+                pdwDisposition ? pdwDisposition->get() : 0xFFFFFFFF,
+                XamGetRootPath(szRootName ? szRootName : ""));
+#endif
+
             return ERROR_SUCCESS;
         }
         else
@@ -353,21 +478,47 @@ uint32_t XamContentCreateEx(uint32_t dwUserIndex, const char* szRootName, const 
             if (pdwDisposition)
                 *pdwDisposition = XCONTENT_NEW;
 
+#if defined(__SWITCH__)
+            LOGFN_ERROR("Switch XamContentCreateEx missing content: root='{}', content='{}', type={}({}), result=0x{:08X}",
+                szRootName ? szRootName : "<null>",
+                contentName,
+                contentType,
+                XamContentTypeName(contentType),
+                ERROR_PATH_NOT_FOUND);
+#endif
+
             return ERROR_PATH_NOT_FOUND;
         }
     }
+
+#if defined(__SWITCH__)
+    LOGFN_ERROR("Switch XamContentCreateEx unsupported mode: root='{}', flags=0x{:08X}, mode=0x{:X}",
+        szRootName ? szRootName : "<null>",
+        dwContentFlags,
+        mode);
+#endif
 
     return ERROR_PATH_NOT_FOUND;
 }
 
 uint32_t XamContentClose(const char* szRootName, XXOVERLAPPED* pOverlapped)
 {
+#if defined(__SWITCH__)
+    LOGFN("Switch XamContentClose: root='{}', mapped='{}'",
+        szRootName ? szRootName : "<null>",
+        XamGetRootPath(szRootName ? szRootName : ""));
+#endif
+
     gRootMap.erase(StringHash(szRootName));
     return 0;
 }
 
 uint32_t XamContentGetDeviceData(uint32_t DeviceID, XDEVICE_DATA* pDeviceData)
 {
+#if defined(__SWITCH__)
+    LOGFN("Switch XamContentGetDeviceData enter: device={}", DeviceID);
+#endif
+
     pDeviceData->DeviceID = DeviceID;
     pDeviceData->DeviceType = XCONTENTDEVICETYPE_HDD;
     pDeviceData->ulDeviceBytes = 0x10000000;
@@ -378,6 +529,12 @@ uint32_t XamContentGetDeviceData(uint32_t DeviceID, XDEVICE_DATA* pDeviceData)
     pDeviceData->wszName[3] = 'i';
     pDeviceData->wszName[4] = 'c';
     pDeviceData->wszName[5] = '\0';
+
+#if defined(__SWITCH__)
+    LOGFN("Switch XamContentGetDeviceData leave: device={}, type=0x{:08X}",
+        DeviceID,
+        static_cast<uint32_t>(pDeviceData->DeviceType.get()));
+#endif
 
     return 0;
 }

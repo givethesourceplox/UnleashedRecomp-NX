@@ -27,6 +27,7 @@ x86/
 [Aa][Rr][Mm]/
 [Aa][Rr][Mm]64/
 bld/
+build/
 [Bb]in/
 [Oo]bj/
 [Ll]og/
@@ -407,3 +408,6 @@ FodyWeavers.xsd
 # CMake Files
 **/cmake-build-debug
 **/CMakeCache.txt
+
+Athmosphere
+libnx

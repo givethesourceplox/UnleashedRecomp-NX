@@ -347,6 +347,129 @@ public:
 }
 g_sdlEventListenerForInstaller;
 
+#if defined(__SWITCH__)
+static float NormalizeSwitchAxis(int16_t value)
+{
+    return std::clamp(value / 32767.0f, -1.0f, 1.0f);
+}
+
+static void ApplySwitchCursorTap(ImVec2 tapDirection)
+{
+    if (tapDirection.x == 0.0f && tapDirection.y == 0.0f)
+        return;
+
+    int newCursorIndex = -1;
+
+    if (g_currentCursorIndex >= int(g_currentCursorRects.size()) || g_currentCursorIndex < 0)
+    {
+        newCursorIndex = g_currentCursorDefault;
+    }
+    else
+    {
+        auto& currentRect = g_currentCursorRects[g_currentCursorIndex];
+        ImVec2 currentPoint =
+        {
+            (currentRect.first.x + currentRect.second.x) / 2.0f + tapDirection.x * (currentRect.second.x - currentRect.first.x) / 2.0f,
+            (currentRect.first.y + currentRect.second.y) / 2.0f + tapDirection.y * (currentRect.second.y - currentRect.first.y) / 2.0f
+        };
+
+        float closestDistance = FLT_MAX;
+        for (size_t i = 0; i < g_currentCursorRects.size(); i++)
+        {
+            if (g_currentCursorIndex == int(i))
+                continue;
+
+            auto& targetRect = g_currentCursorRects[i];
+            ImVec2 targetPoint =
+            {
+                (targetRect.first.x + targetRect.second.x) / 2.0f + tapDirection.x * (targetRect.first.x - targetRect.second.x) / 2.0f,
+                (targetRect.first.y + targetRect.second.y) / 2.0f + tapDirection.y * (targetRect.first.y - targetRect.second.y) / 2.0f
+            };
+
+            ImVec2 delta = { targetPoint.x - currentPoint.x, targetPoint.y - currentPoint.y };
+            float projectedDistance = delta.x * tapDirection.x + delta.y * tapDirection.y;
+            float manhattanDistance = abs(delta.x) + abs(delta.y);
+            if (projectedDistance > 0.0f && manhattanDistance < closestDistance)
+            {
+                newCursorIndex = int(i);
+                closestDistance = manhattanDistance;
+            }
+        }
+    }
+
+    if (newCursorIndex >= 0)
+    {
+        if (g_currentCursorIndex != newCursorIndex)
+            Game_PlaySound("sys_worldmap_cursor");
+
+        g_currentCursorIndex = newCursorIndex;
+    }
+}
+
+static void ProcessSwitchInput()
+{
+    static uint16_t previousButtons = 0;
+    static ImVec2 previousAxis = {};
+
+    bool noModals = g_currentMessagePrompt.empty() && !g_currentPickerVisible;
+    XAMINPUT_STATE inputState{};
+    if (!noModals || !hid::IsInputAllowed() || hid::GetState(0, &inputState) != 0)
+    {
+        previousButtons = 0;
+        previousAxis = {};
+        return;
+    }
+
+    const uint16_t buttons = inputState.Gamepad.wButtons;
+    const uint16_t pressedButtons = buttons & ~previousButtons;
+
+    ImVec2 tapDirection = {};
+    if ((pressedButtons & XAMINPUT_GAMEPAD_DPAD_LEFT) != 0)
+        tapDirection = { -1.0f, 0.0f };
+    else if ((pressedButtons & XAMINPUT_GAMEPAD_DPAD_RIGHT) != 0)
+        tapDirection = { 1.0f, 0.0f };
+    else if ((pressedButtons & XAMINPUT_GAMEPAD_DPAD_UP) != 0)
+        tapDirection = { 0.0f, -1.0f };
+    else if ((pressedButtons & XAMINPUT_GAMEPAD_DPAD_DOWN) != 0)
+        tapDirection = { 0.0f, 1.0f };
+
+    if ((pressedButtons & XAMINPUT_GAMEPAD_A) != 0)
+    {
+        if (!g_currentCursorRects.empty() &&
+            (g_currentCursorIndex < 0 || g_currentCursorIndex >= int(g_currentCursorRects.size())))
+        {
+            g_currentCursorIndex = std::clamp(g_currentCursorDefault, 0, int(g_currentCursorRects.size()) - 1);
+        }
+        g_currentCursorAccepted = (g_currentCursorIndex >= 0);
+    }
+
+    if ((pressedButtons & XAMINPUT_GAMEPAD_B) != 0)
+        g_currentCursorBack = true;
+
+    constexpr float AxisTapRange = 0.5f;
+    ImVec2 currentAxis =
+    {
+        NormalizeSwitchAxis(inputState.Gamepad.sThumbLX),
+        -NormalizeSwitchAxis(inputState.Gamepad.sThumbLY)
+    };
+
+    for (int i = 0; i < 2; i++)
+    {
+        float newAxisValue = currentAxis[i];
+        bool sameDirection = (newAxisValue * previousAxis[i]) > 0.0f;
+        bool wasInRange = abs(previousAxis[i]) > AxisTapRange;
+        bool isInRange = abs(newAxisValue) > AxisTapRange;
+        if ((sameDirection || previousAxis[i] == 0.0f) && !wasInRange && isInRange)
+            tapDirection[i] = newAxisValue;
+    }
+
+    ApplySwitchCursorTap(tapDirection);
+
+    previousButtons = buttons;
+    previousAxis = currentAxis;
+}
+#endif
+
 static std::string& GetWizardText(WizardPage page)
 {
     switch (page)
@@ -1777,6 +1900,10 @@ void InstallerWizard::Draw()
         return;
     }
 
+#if defined(__SWITCH__)
+    ProcessSwitchInput();
+#endif
+
     ResetCursorRects();
     DrawBackground();
     DrawLeftImage();
@@ -1873,8 +2000,10 @@ bool InstallerWizard::Run(std::filesystem::path installPath, bool skipGame)
     {
         Video::WaitOnSwapChain();
         ProcessMusic();
+#if !defined(__SWITCH__)
         SDL_PumpEvents();
         SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
+#endif
         GameWindow::Update();
         Video::Present();
     }

@@ -97,14 +97,22 @@ static Mix_Music* g_installerMusic;
 
 void EmbeddedPlayer::Init() 
 {
+#if defined(__SWITCH__)
+    s_isActive = false;
+    return;
+#else
     Mix_OpenAudio(XAUDIO_SAMPLES_HZ, AUDIO_F32SYS, 2, 4096);
     g_installerMusic = Mix_LoadMUS_RW(SDL_RWFromConstMem(g_installer_music, sizeof(g_installer_music)), 1);
 
     s_isActive = true;
+#endif
 }
 
 void EmbeddedPlayer::Play(const char *name) 
 {
+    if (!s_isActive)
+        return;
+
     assert(s_isActive && "Playback shouldn't be requested if the Embedded Player isn't active.");
 
     auto it = g_embeddedSoundMap.find(name);
@@ -118,6 +126,9 @@ void EmbeddedPlayer::Play(const char *name)
 
 void EmbeddedPlayer::PlayMusic()
 {
+    if (!s_isActive)
+        return;
+
     if (!Mix_PlayingMusic())
     {
         Mix_PlayMusic(g_installerMusic, INT_MAX);
@@ -127,12 +138,18 @@ void EmbeddedPlayer::PlayMusic()
 
 void EmbeddedPlayer::FadeOutMusic()
 {
+    if (!s_isActive)
+        return;
+
     if (Mix_PlayingMusic())
         Mix_FadeOutMusic(1000);
 }
 
 void EmbeddedPlayer::Shutdown() 
 {
+    if (!s_isActive)
+        return;
+
     for (EmbeddedSoundData &data : g_embeddedSoundData)
     {
         if (data.chunk != nullptr)

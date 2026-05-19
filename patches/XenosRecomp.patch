@@ -1,0 +1,15 @@
+diff --git a/XenosRecomp/CMakeLists.txt b/XenosRecomp/CMakeLists.txt
+index e505a5e..ea1b525 100644
+--- a/XenosRecomp/CMakeLists.txt
++++ b/XenosRecomp/CMakeLists.txt
+@@ -26,6 +26,10 @@ target_link_libraries(XenosRecomp PRIVATE
+ 
+ target_include_directories(XenosRecomp PRIVATE ${SMOLV_SOURCE_DIR})
+ 
++if (UNLEASHED_RECOMP_HOST_TOOLS_ONLY)
++    target_compile_definitions(XenosRecomp PRIVATE UNLEASHED_RECOMP)
++endif()
++
+ target_precompile_headers(XenosRecomp PRIVATE pch.h)
+ 
+ if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")

@@ -311,7 +311,7 @@ static std::unique_ptr<RenderCommandFence> g_commandFences[NUM_FRAMES];
 static std::unique_ptr<RenderQueryPool> g_queryPools[NUM_FRAMES];
 static bool g_commandListStates[NUM_FRAMES];
 
-static Mutex g_copyMutex;
+static RecompMutex g_copyMutex;
 static std::unique_ptr<RenderCommandQueue> g_copyQueue;
 static std::unique_ptr<RenderCommandList> g_copyCommandList;
 static std::unique_ptr<RenderCommandFence> g_copyCommandFence;
@@ -347,7 +347,7 @@ enum
 
 struct TextureDescriptorAllocator
 {
-    Mutex mutex;
+    RecompMutex mutex;
     uint32_t capacity = TEXTURE_DESCRIPTOR_NULL_COUNT;
     std::vector<uint32_t> freed;
 
@@ -392,12 +392,12 @@ static std::atomic<uint32_t> g_pipelinesCreatedAsynchronously;
 static std::atomic<uint32_t> g_pipelinesDropped;
 static std::atomic<uint32_t> g_pipelinesCurrentlyCompiling;
 static std::string g_pipelineDebugText;
-static Mutex g_debugMutex;
+static RecompMutex g_debugMutex;
 #endif
 
 #ifdef PSO_CACHING
 static xxHashMap<PipelineState> g_pipelineStatesToCache;
-static Mutex g_pipelineCacheMutex;
+static RecompMutex g_pipelineCacheMutex;
 #endif
 
 static std::atomic<uint32_t> g_compilingPipelineTaskCount;
@@ -417,7 +417,7 @@ struct PipelineTask
     boost::shared_ptr<Hedgehog::Database::CDatabaseData> databaseData;
 };
 
-static Mutex g_pipelineTaskMutex;
+static RecompMutex g_pipelineTaskMutex;
 static std::vector<PipelineTask> g_pipelineTaskQueue;
 
 static void EnqueuePipelineTask(PipelineTaskType type, const boost::shared_ptr<Hedgehog::Database::CDatabaseData>& databaseData)
@@ -450,7 +450,7 @@ static uint8_t* const g_vertexDeclarationCache[] =
 
 static xxHashMap<std::pair<uint32_t, std::unique_ptr<RenderSampler>>> g_samplerStates;
 
-static Mutex g_vertexDeclarationMutex;
+static RecompMutex g_vertexDeclarationMutex;
 static xxHashMap<GuestVertexDeclaration*> g_vertexDeclarations;
 
 struct UploadBuffer
@@ -3894,7 +3894,7 @@ static RenderShader* GetOrLinkShader(GuestShader* guestShader, uint32_t specCons
 #ifdef UNLEASHED_RECOMP_D3D12
     if (shader == nullptr)
     {
-        static Mutex g_compiledSpecConstantLibraryBlobMutex;
+        static RecompMutex g_compiledSpecConstantLibraryBlobMutex;
         static ankerl::unordered_dense::map<uint32_t, ComPtr<IDxcBlob>> g_compiledSpecConstantLibraryBlobs;
 
         thread_local ComPtr<IDxcCompiler3> s_dxcCompiler;
@@ -6952,8 +6952,10 @@ PPC_FUNC(sub_825369A0)
     {
         // Pump SDL events to prevent the OS
         // from thinking the process is unresponsive.
+#if !defined(__SWITCH__)
         SDL_PumpEvents();
         SDL_FlushEvents(SDL_FIRSTEVENT, SDL_LASTEVENT);
+#endif
 
         g_compilingPipelineTaskCount.wait(value);
     }

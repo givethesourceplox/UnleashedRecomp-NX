@@ -1,0 +1,22 @@
+#include <os/registry.h>
+
+inline bool os::registry::Init()
+{
+    return false;
+}
+
+template<typename T>
+bool os::registry::ReadValue(const std::string_view& name, T& data)
+{
+    (void)name;
+    (void)data;
+    return false;
+}
+
+template<typename T>
+bool os::registry::WriteValue(const std::string_view& name, const T& data)
+{
+    (void)name;
+    (void)data;
+    return false;
+}

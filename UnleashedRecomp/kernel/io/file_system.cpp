@@ -385,14 +385,26 @@ std::filesystem::path FileSystem::ResolvePath(const std::string_view& path, bool
         // rooted folder, handle direction
         std::string_view root = path.substr(0, index);
 
-        // HACK: The game tries to load work folder from the "game" root path for 
-        // Application and shader archives, which does not work in Recomp because 
-        // we don't support stacking the update and game files on top of each other.
-        // 
-        // We can fix it by redirecting it to update instead as we know the original
-        // game files don't have a work folder.
+        // HACK: The game tries to load the work folder from the "game" root path
+        // for Application and shader archives. Prefer the update overlay when the
+        // requested path exists there, but do not force partial installs into a
+        // missing update path.
+        const std::string_view pathNoRoot = path.substr(index + 2);
         if (path.starts_with("game:\\work\\"))
-            root = "update";
+        {
+            const auto updateRoot = XamGetRootPath("update");
+            if (!updateRoot.empty())
+            {
+                std::string updatePath(updateRoot);
+                updatePath += '/';
+                updatePath += pathNoRoot;
+                std::replace(updatePath.begin(), updatePath.end(), '\\', '/');
+
+                std::error_code ec;
+                if (std::filesystem::exists(updatePath, ec))
+                    root = "update";
+            }
+        }
 
         const auto newRoot = XamGetRootPath(root);
 
@@ -402,7 +414,7 @@ std::filesystem::path FileSystem::ResolvePath(const std::string_view& path, bool
             builtPath += '/';
         }
         
-        builtPath += path.substr(index + 2);
+        builtPath += pathNoRoot;
     }
     else
     {
